@@ -25,53 +25,30 @@ public class LocalFileStorageWriteLock : IStorageWriteLock
 		_competitionSlug = opts.CompetitionSlug;
 	}
 
+	public bool IsLocked(string lockName)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		return IsLockedInternal(lockName);
+	}
+
 	public Task<bool> IsLockedAsync(string lockName, CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		cancellationToken.ThrowIfCancellationRequested();
+		return Task.FromResult(IsLockedInternal(lockName));
+	}
 
+	private bool IsLockedInternal(string lockName)
+	{
 		lock (_syncRoot)
 		{
 			var document = ReadLockDocument(lockName);
 			if (document is null)
 			{
-				return Task.FromResult(false);
+				return false;
 			}
 
-			return Task.FromResult(!StorageWriteLockHelper.IsExpired(document, DateTime.UtcNow));
-		}
-	}
-
-	public Task<IStorageWriteLockHandle?> TryAcquireAsync(
-		string lockName,
-		string holder,
-		TimeSpan ttl,
-		CancellationToken cancellationToken = default)
-	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
-		ArgumentException.ThrowIfNullOrWhiteSpace(holder);
-		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
-
-		lock (_syncRoot)
-		{
-			var utcNow = DateTime.UtcNow;
-			var existing = ReadLockDocument(lockName);
-			if (existing is not null)
-			{
-				if (!StorageWriteLockHelper.IsExpired(existing, utcNow))
-				{
-					return Task.FromResult<IStorageWriteLockHandle?>(null);
-				}
-
-				DeleteLockFile(lockName);
-			}
-
-			var lockDocument = StorageWriteLockHelper.CreateDocument(holder, ttl, utcNow);
-			WriteLockDocument(lockName, lockDocument);
-
-			return Task.FromResult<IStorageWriteLockHandle?>(
-				new StorageWriteLockHandle(
-					lockName,
-					() => ReleaseLockBestEffortAsync(lockName, lockDocument.Holder, lockDocument.AcquiredAtUtc)));
+			return !StorageWriteLockHelper.IsExpired(document, DateTime.UtcNow);
 		}
 	}
 
@@ -91,6 +68,59 @@ public class LocalFileStorageWriteLock : IStorageWriteLock
 	{
 		var objectPath = StorageWriteLockHelper.GetLockObjectPath(lockName, _competitionSlug);
 		return Path.Combine(_localRoot, objectPath.Replace('/', Path.DirectorySeparatorChar));
+	}
+
+	public IStorageWriteLockHandle? TryAcquire(string lockName, string holder, TimeSpan ttl)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		ArgumentException.ThrowIfNullOrWhiteSpace(holder);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
+
+		return TryAcquireInternal(lockName, holder, ttl);
+	}
+
+	public Task<IStorageWriteLockHandle?> TryAcquireAsync(
+		string lockName,
+		string holder,
+		TimeSpan ttl,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		ArgumentException.ThrowIfNullOrWhiteSpace(holder);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
+		cancellationToken.ThrowIfCancellationRequested();
+
+		return Task.FromResult(TryAcquireInternal(lockName, holder, ttl));
+	}
+
+	private IStorageWriteLockHandle? TryAcquireInternal(string lockName, string holder, TimeSpan ttl)
+	{
+		lock (_syncRoot)
+		{
+			var utcNow = DateTime.UtcNow;
+			var existing = ReadLockDocument(lockName);
+			if (existing is not null)
+			{
+				if (!StorageWriteLockHelper.IsExpired(existing, utcNow))
+				{
+					return null;
+				}
+
+				DeleteLockFile(lockName);
+			}
+
+			var lockDocument = StorageWriteLockHelper.CreateDocument(holder, ttl, utcNow);
+			WriteLockDocument(lockName, lockDocument);
+
+			return new StorageWriteLockHandle(
+				lockName,
+				() => ReleaseLockBestEffort(lockName, lockDocument.Holder, lockDocument.AcquiredAtUtc),
+				() =>
+				{
+					ReleaseLockBestEffort(lockName, lockDocument.Holder, lockDocument.AcquiredAtUtc);
+					return Task.CompletedTask;
+				});
+		}
 	}
 
 	private void WriteLockDocument(string lockName, StorageWriteLockDocument document)
@@ -113,7 +143,7 @@ public class LocalFileStorageWriteLock : IStorageWriteLock
 		}
 	}
 
-	private Task ReleaseLockBestEffortAsync(string lockName, string holder, DateTime acquiredAtUtc)
+	private void ReleaseLockBestEffort(string lockName, string holder, DateTime acquiredAtUtc)
 	{
 		lock (_syncRoot)
 		{
@@ -125,7 +155,5 @@ public class LocalFileStorageWriteLock : IStorageWriteLock
 				DeleteLockFile(lockName);
 			}
 		}
-
-		return Task.CompletedTask;
 	}
 }

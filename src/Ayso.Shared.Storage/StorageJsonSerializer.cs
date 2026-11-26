@@ -37,6 +37,14 @@ public static class StorageJsonSerializer
 			?? throw new InvalidOperationException($"Failed to deserialize {typeof(T).Name}.");
 	}
 
+	public static T Deserialize<T>(Stream stream)
+	{
+		ArgumentNullException.ThrowIfNull(stream);
+
+		return JsonSerializer.Deserialize<T>(stream, Options)
+			?? throw new InvalidOperationException($"Failed to deserialize {typeof(T).Name}.");
+	}
+
 	public static Task<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(stream);

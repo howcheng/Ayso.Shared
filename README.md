@@ -37,9 +37,9 @@ Domain
 
 ## Storage notes
 
-- **JSON document storage (`IJsonObjectStore`)** — `LocalFileJsonObjectStore` (atomic `.tmp` rename + `.generation` sidecar) and `GcsJsonObjectStore` (`IfGenerationMatch` optimistic concurrency + transient rate-limit retries).
-- **Binary blob storage (`IBlobObjectStore`)** — `LocalFileBlobObjectStore` and `GcsBlobObjectStore` share the same `StorageOptions` (`Provider`, `BucketName`, `LocalRoot`) for binary assets such as scorecard photos, exposing both sync and async overloads (`Upload` / `UploadAsync`, `OpenRead` / `OpenReadAsync`, `Exists` / `ExistsAsync`, `Delete` / `DeleteAsync`).
-- **Write locks (`IStorageWriteLock`)** — `LocalFileStorageWriteLock` and `GcsStorageWriteLock` coordinate coarse-grained administrative operations under `{competitionSlug}/locks/{lockName}.json`.
+- **JSON document storage (`IJsonObjectStore`)** — `LocalFileJsonObjectStore` (atomic `.tmp` rename + `.generation` sidecar) and `GcsJsonObjectStore` (`IfGenerationMatch` optimistic concurrency + transient rate-limit retries), exposing paired sync and async overloads (`Get` / `GetAsync`, `Save` / `SaveAsync`, `Exists` / `ExistsAsync`, `Delete` / `DeleteAsync`).
+- **Binary blob storage (`IBlobObjectStore`)** — `LocalFileBlobObjectStore` and `GcsBlobObjectStore` share the same `StorageOptions` (`Provider`, `BucketName`, `LocalRoot`) for binary assets such as scorecard photos, exposing paired sync and async overloads (`Upload` / `UploadAsync`, `OpenRead` / `OpenReadAsync`, `Exists` / `ExistsAsync`, `Delete` / `DeleteAsync`).
+- **Write locks (`IStorageWriteLock`)** — `LocalFileStorageWriteLock` and `GcsStorageWriteLock` coordinate coarse-grained administrative operations under `{competitionSlug}/locks/{lockName}.json`, exposing paired sync and async overloads (`IsLocked` / `IsLockedAsync`, `TryAcquire` / `TryAcquireAsync`) with `IStorageWriteLockHandle` implementing both `IDisposable` and `IAsyncDisposable`.
 
 ## Auth & security headers notes
 

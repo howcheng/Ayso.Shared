@@ -31,6 +31,22 @@ public class LocalFileStorageWriteLockTests : IDisposable
 	}
 
 	[Fact]
+	public void TryAcquire_Sync_AcquiresBlocksAndReleasesViaDispose()
+	{
+		using (var handle = _lock.TryAcquire("sync-import", "tester", TimeSpan.FromMinutes(1)))
+		{
+			Assert.NotNull(handle);
+			Assert.True(_lock.IsLocked("sync-import"));
+			Assert.Null(_lock.TryAcquire("sync-import", "other", TimeSpan.FromMinutes(1)));
+		}
+
+		Assert.False(_lock.IsLocked("sync-import"));
+
+		using var reacquired = _lock.TryAcquire("sync-import", "other", TimeSpan.FromMinutes(1));
+		Assert.NotNull(reacquired);
+	}
+
+	[Fact]
 	public async Task TryAcquireAsync_FailsWhenHeld()
 	{
 		await using var first = await _lock.TryAcquireAsync("import", "holder-a", TimeSpan.FromMinutes(5));

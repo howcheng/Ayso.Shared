@@ -32,22 +32,27 @@ public class GcsStorageWriteLock : IStorageWriteLock
 		_competitionSlug = opts.CompetitionSlug;
 	}
 
+	public bool IsLocked(string lockName)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		return IsLockedInternal(lockName);
+	}
+
 	public Task<bool> IsLockedAsync(string lockName, CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
 		return IsLockedInternalAsync(lockName, cancellationToken);
 	}
 
-	public Task<IStorageWriteLockHandle?> TryAcquireAsync(
-		string lockName,
-		string holder,
-		TimeSpan ttl,
-		CancellationToken cancellationToken = default)
+	private bool IsLockedInternal(string lockName)
 	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
-		ArgumentException.ThrowIfNullOrWhiteSpace(holder);
-		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
-		return TryAcquireInternalAsync(lockName, holder, ttl, cancellationToken);
+		var existing = TryReadLockDocument(lockName);
+		if (existing is null)
+		{
+			return false;
+		}
+
+		return !StorageWriteLockHelper.IsExpired(existing.Value.Document, DateTime.UtcNow);
 	}
 
 	private async Task<bool> IsLockedInternalAsync(string lockName, CancellationToken cancellationToken)
@@ -59,6 +64,26 @@ public class GcsStorageWriteLock : IStorageWriteLock
 		}
 
 		return !StorageWriteLockHelper.IsExpired(existing.Value.Document, DateTime.UtcNow);
+	}
+
+	private (StorageWriteLockDocument Document, long? Generation)? TryReadLockDocument(string lockName)
+	{
+		var objectPath = StorageWriteLockHelper.GetLockObjectPath(lockName, _competitionSlug);
+
+		try
+		{
+			var obj = _storageClient.GetObject(_bucketName, objectPath);
+			using var stream = new MemoryStream();
+			_storageClient.DownloadObject(_bucketName, objectPath, stream);
+			stream.Position = 0;
+
+			var document = StorageJsonSerializer.Deserialize<StorageWriteLockDocument>(stream);
+			return (document, obj.Generation);
+		}
+		catch (GoogleApiException ex) when (ex.HttpStatusCode == HttpStatusCode.NotFound)
+		{
+			return null;
+		}
 	}
 
 	private async Task<(StorageWriteLockDocument Document, long? Generation)?> TryReadLockDocumentAsync(
@@ -81,6 +106,57 @@ public class GcsStorageWriteLock : IStorageWriteLock
 		{
 			return null;
 		}
+	}
+
+	public IStorageWriteLockHandle? TryAcquire(string lockName, string holder, TimeSpan ttl)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		ArgumentException.ThrowIfNullOrWhiteSpace(holder);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
+
+		return TryAcquireInternal(lockName, holder, ttl);
+	}
+
+	public Task<IStorageWriteLockHandle?> TryAcquireAsync(
+		string lockName,
+		string holder,
+		TimeSpan ttl,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(lockName);
+		ArgumentException.ThrowIfNullOrWhiteSpace(holder);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
+
+		return TryAcquireInternalAsync(lockName, holder, ttl, cancellationToken);
+	}
+
+	private IStorageWriteLockHandle? TryAcquireInternal(string lockName, string holder, TimeSpan ttl)
+	{
+		for (var attempt = 0; attempt < MaxAcquireAttempts; attempt++)
+		{
+			var utcNow = DateTime.UtcNow;
+			var existing = TryReadLockDocument(lockName);
+			if (existing is not null)
+			{
+				if (!StorageWriteLockHelper.IsExpired(existing.Value.Document, utcNow))
+				{
+					return null;
+				}
+
+				DeleteLock(lockName, existing.Value.Generation);
+			}
+
+			var created = TryCreateLock(lockName, holder, ttl, utcNow);
+			if (created.Acquired)
+			{
+				return new StorageWriteLockHandle(
+					lockName,
+					() => ReleaseLockBestEffort(lockName, created.Generation),
+					() => ReleaseLockBestEffortAsync(lockName, created.Generation));
+			}
+		}
+
+		return null;
 	}
 
 	private async Task<IStorageWriteLockHandle?> TryAcquireInternalAsync(
@@ -108,11 +184,44 @@ public class GcsStorageWriteLock : IStorageWriteLock
 			{
 				return new StorageWriteLockHandle(
 					lockName,
+					() => ReleaseLockBestEffort(lockName, created.Generation),
 					() => ReleaseLockBestEffortAsync(lockName, created.Generation));
 			}
 		}
 
 		return null;
+	}
+
+	private (bool Acquired, long? Generation) TryCreateLock(
+		string lockName,
+		string holder,
+		TimeSpan ttl,
+		DateTime utcNow)
+	{
+		var objectPath = StorageWriteLockHelper.GetLockObjectPath(lockName, _competitionSlug);
+		var document = StorageWriteLockHelper.CreateDocument(holder, ttl, utcNow);
+
+		try
+		{
+			using var stream = new MemoryStream(StorageJsonSerializer.SerializeToUtf8Bytes(document), writable: false);
+			var uploadOptions = new UploadObjectOptions
+			{
+				IfGenerationMatch = 0,
+			};
+
+			var uploaded = _storageClient.UploadObject(
+				_bucketName,
+				objectPath,
+				"application/json",
+				stream,
+				uploadOptions);
+
+			return (true, uploaded?.Generation);
+		}
+		catch (GoogleApiException ex) when (ex.HttpStatusCode == HttpStatusCode.PreconditionFailed)
+		{
+			return (false, null);
+		}
 	}
 
 	private async Task<(bool Acquired, long? Generation)> TryCreateLockAsync(
@@ -149,6 +258,25 @@ public class GcsStorageWriteLock : IStorageWriteLock
 		}
 	}
 
+	private void DeleteLock(string lockName, long? generation)
+	{
+		var objectPath = StorageWriteLockHelper.GetLockObjectPath(lockName, _competitionSlug);
+
+		try
+		{
+			var deleteOptions = generation.HasValue
+				? new DeleteObjectOptions { IfGenerationMatch = generation.Value }
+				: null;
+
+			_storageClient.DeleteObject(_bucketName, objectPath, deleteOptions);
+		}
+		catch (GoogleApiException ex) when (
+			ex.HttpStatusCode == HttpStatusCode.NotFound ||
+			ex.HttpStatusCode == HttpStatusCode.PreconditionFailed)
+		{
+		}
+	}
+
 	private async Task DeleteLockAsync(string lockName, long? generation, CancellationToken cancellationToken)
 	{
 		var objectPath = StorageWriteLockHelper.GetLockObjectPath(lockName, _competitionSlug);
@@ -168,6 +296,29 @@ public class GcsStorageWriteLock : IStorageWriteLock
 		catch (GoogleApiException ex) when (
 			ex.HttpStatusCode == HttpStatusCode.NotFound ||
 			ex.HttpStatusCode == HttpStatusCode.PreconditionFailed)
+		{
+		}
+	}
+
+	private void ReleaseLockBestEffort(string lockName, long? createdGeneration)
+	{
+		try
+		{
+			var generationToDelete = createdGeneration;
+			if (!generationToDelete.HasValue)
+			{
+				var existing = TryReadLockDocument(lockName);
+				if (existing is null)
+				{
+					return;
+				}
+
+				generationToDelete = existing.Value.Generation;
+			}
+
+			DeleteLock(lockName, generationToDelete);
+		}
+		catch (GoogleApiException)
 		{
 		}
 	}
