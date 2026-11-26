@@ -1,7 +1,7 @@
 ﻿namespace Ayso.Shared.Storage;
 
 /// <summary>
-/// Configuration options for JSON document storage (local filesystem or GCS).
+/// Configuration options for JSON document and binary blob storage (local filesystem or GCS).
 /// </summary>
 public class StorageOptions
 {
