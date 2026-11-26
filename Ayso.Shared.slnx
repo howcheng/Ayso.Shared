@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Ayso.Shared.AspNet/Ayso.Shared.AspNet.csproj" />
+    <Project Path="src/Ayso.Shared.Domain/Ayso.Shared.Domain.csproj" />
+    <Project Path="src/Ayso.Shared.Scoring/Ayso.Shared.Scoring.csproj" />
+    <Project Path="src/Ayso.Shared.Storage/Ayso.Shared.Storage.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Ayso.Shared.AspNet.Tests/Ayso.Shared.AspNet.Tests.csproj" />
+    <Project Path="tests/Ayso.Shared.Domain.Tests/Ayso.Shared.Domain.Tests.csproj" />
+    <Project Path="tests/Ayso.Shared.Scoring.Tests/Ayso.Shared.Scoring.Tests.csproj" />
+    <Project Path="tests/Ayso.Shared.Storage.Tests/Ayso.Shared.Storage.Tests.csproj" />
+  </Folder>
+</Solution>
